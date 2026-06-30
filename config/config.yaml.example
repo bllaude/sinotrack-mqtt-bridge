@@ -1,0 +1,24 @@
+# sinotrack-mqtt-bridge configuration
+# Copy this to config.yaml and edit to match your setup.
+
+server:
+  host: "0.0.0.0"       # Listen on all interfaces
+  port: 8090             # TCP port (tell your tracker: 8040000 <your-ip> 8090)
+  ack_enabled: true      # Send *HQ,<imei>,R12,<time># ACK after each packet
+
+mqtt:
+  host: "localhost"      # MQTT broker address
+  port: 1883             # MQTT broker port (use 8883 for TLS)
+  username: null         # MQTT username (null = no auth)
+  password: null         # MQTT password
+  topic_prefix: "sinotrack"    # Root topic: sinotrack/<imei>/location etc.
+  client_id: "sinotrack-mqtt-bridge"
+  retain: true           # Retain location/status messages
+  qos: 1                 # MQTT QoS level (0, 1, or 2)
+
+  # Home Assistant MQTT Discovery
+  ha_discovery: true
+  ha_discovery_prefix: "homeassistant"
+
+logging:
+  level: "INFO"          # DEBUG | INFO | WARNING | ERROR

@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+  broker:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    ports:
+      - "1883:1883"
+      - "9001:9001"   # WebSocket (optional, for browser clients)
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    restart: unless-stopped
+
+  bridge:
+    build: .
+    container_name: sinotrack-mqtt-bridge
+    depends_on:
+      - broker
+    ports:
+      - "8090:8090"   # H02 TCP — point your Sinotrack here
+    volumes:
+      - ./config/config.yaml:/app/config/config.yaml:ro
+    environment:
+      - MQTT_HOST=broker
+      - MQTT_PORT=1883
+      # Uncomment if your broker requires auth:
+      # - MQTT_USER=your_user
+      # - MQTT_PASSWORD=your_password
+    restart: unless-stopped
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:
