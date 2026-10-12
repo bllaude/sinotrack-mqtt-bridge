@@ -10,8 +10,8 @@ Flow:
 
 import asyncio
 import logging
+import re
 import time
-from collections import defaultdict
 from typing import Callable, Optional
 
 from h02_parser import parse_packet, build_ack, ParsedPacket, H02ParseError
@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 # Callback type: (ParsedPacket) → None
 PacketCallback = Callable[[ParsedPacket], None]
+
+# Raw IMEI keepalive: 15 ASCII digits, optionally followed by \r or \n
+_IMEI_HEARTBEAT_RE = re.compile(rb"^\d{15}\r?$")
 
 
 class DeviceConnection:
@@ -50,7 +53,6 @@ class DeviceConnection:
         try:
             while True:
                 # H02 text packets end with '#'; binary packets have a fixed length.
-                # Read up to 512 bytes; most packets are < 100 bytes.
                 data = await asyncio.wait_for(
                     self._read_packet(),
                     timeout=300,   # 5-minute idle timeout
@@ -77,8 +79,8 @@ class DeviceConnection:
                     self.imei = pkt.imei
                     logger.info("Device IMEI identified: %s (%s)", self.imei, peer)
 
-                # ACK text packets so device doesn't retransmit
-                if self.ack_enabled and pkt.packet_type not in ("binary", "heartbeat"):
+                # ACK text packets (and raw-IMEI heartbeats) so device doesn't retransmit
+                if self.ack_enabled and pkt.packet_type != "binary":
                     ack = build_ack(pkt.imei)
                     self.writer.write(ack)
                     await self.writer.drain()
@@ -95,7 +97,7 @@ class DeviceConnection:
 
         except asyncio.TimeoutError:
             logger.info("Idle timeout for %s (IMEI: %s)", peer, self.imei or "unknown")
-        except asyncio.IncompleteReadError:
+        except (asyncio.IncompleteReadError, ConnectionResetError):
             logger.info("Connection reset by %s", peer)
         except Exception as e:
             logger.exception("Unexpected error for %s: %s", peer, e)
@@ -110,9 +112,9 @@ class DeviceConnection:
     async def _read_packet(self) -> bytes:
         """
         Read one H02 packet. Handles:
-          - Text packets: start with '*' or '*HQ', end with '#'
+          - Text packets: start with '*', end with '#'
           - Binary packets: start with 0x24 ($), fixed 25-byte length
-          - Raw IMEI heartbeat: 15 ASCII digits followed by newline or next packet
+          - Raw IMEI heartbeat: 15 ASCII digits followed by newline
         """
         first = await self.reader.read(1)
         if not first:
@@ -128,21 +130,40 @@ class DeviceConnection:
             rest = await self.reader.readexactly(24)   # 1 + 24 = 25 bytes total
             return first + rest
 
-        # ── Could be a plain IMEI keepalive or junk ─────────────────────
-        # Read until newline or '#', whichever comes first
-        rest = await self.reader.readuntil(b"\n", )
-        return first + rest.rstrip(b"\n\r")
+        # ── Plain IMEI keepalive or junk ─────────────────────────────────
+        # Read until newline; if the line is exactly 15 digits it's a heartbeat.
+        try:
+            rest = await self.reader.readuntil(b"\n")
+        except asyncio.LimitOverrunError as e:
+            # No newline within the buffer limit — treat buffered data as one line
+            return (first + e.consumed).rstrip(b"\r\n")
+        except asyncio.IncompleteReadError:
+            return first
+        line = (first + rest).rstrip(b"\r\n")
+        if _IMEI_HEARTBEAT_RE.match(line):
+            return line
+        # Not a valid heartbeat — return whatever arrived so the parser can log it
+        return line
 
 
 class TCPServer:
     """Async TCP server that spawns a DeviceConnection per client."""
 
-    def __init__(self, host: str, port: int, on_packet: PacketCallback, ack_enabled: bool = True):
-        self.host        = host
-        self.port        = port
-        self.on_packet   = on_packet
-        self.ack_enabled = ack_enabled
-        self.stats: dict = defaultdict(dict)
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        on_packet: PacketCallback,
+        ack_enabled: bool = True,
+        max_connections: int = 100,
+    ):
+        self.host            = host
+        self.port            = port
+        self.on_packet       = on_packet
+        self.ack_enabled     = ack_enabled
+        self.max_connections = max_connections
+        self.stats: dict = {}
+        self._active = 0
         self._server: Optional[asyncio.Server] = None
 
     async def start(self) -> None:
@@ -160,16 +181,29 @@ class TCPServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         peer = writer.get_extra_info("peername", ("?", 0))
-        conn_stats: dict = {}
-        self.stats[peer] = conn_stats
+        if self._active >= self.max_connections:
+            logger.warning("Max connections (%d) reached — rejecting %s",
+                           self.max_connections, peer)
+            try:
+                await writer.drain()
+            except Exception:
+                pass
+            writer.close()
+            return
+        self._active += 1
+        conn_stats: dict = {"peer": peer}
         conn = DeviceConnection(
             reader, writer,
             on_packet=self.on_packet,
             ack_enabled=self.ack_enabled,
             stats=conn_stats,
         )
-        await conn.handle()
-        self.stats.pop(peer, None)
+        try:
+            await conn.handle()
+            key = conn.imei or f"{peer[0]}:{peer[1]}"
+            self.stats[key] = conn_stats
+        finally:
+            self._active -= 1
 
     async def stop(self) -> None:
         if self._server:
@@ -178,4 +212,9 @@ class TCPServer:
             logger.info("TCP server stopped")
 
     def get_stats(self) -> dict:
+        """Per-device stats, keyed by IMEI (or peer address pre-identification)."""
         return dict(self.stats)
+
+    @property
+    def active_connections(self) -> int:
+        return self._active
