@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pytest
 from datetime import timezone
-from h02_parser import parse_packet, build_ack, _nmea_to_decimal, _parse_status
+from h02_parser import parse_packet, build_ack, is_valid_imei, _nmea_to_decimal, _parse_status
 
 
 # ── NMEA helpers ─────────────────────────────────────────────────────────────
@@ -192,3 +192,49 @@ class TestSerialization:
         )
         d = pkt.to_dict()
         assert d["timestamp"] is None
+
+
+# ── Raw IMEI heartbeat ────────────────────────────────────────────────────────
+
+class TestRawImeiHeartbeat:
+    def test_bare_imei_is_heartbeat(self):
+        pkt = parse_packet(b"123456789012345")
+        assert pkt is not None
+        assert pkt.packet_type == "heartbeat"
+        assert pkt.imei == "123456789012345"
+
+    def test_short_digit_string_not_heartbeat(self):
+        assert parse_packet(b"12345") is None
+
+
+# ── IMEI validation (Luhn) ────────────────────────────────────────────────────
+
+class TestImeiValidation:
+    def test_valid_imei(self):
+        # 490154203237518 is a canonical Luhn-valid test IMEI
+        assert is_valid_imei("490154203237518") is True
+
+    def test_invalid_checksum(self):
+        assert is_valid_imei("490154203237519") is False
+
+    def test_wrong_length(self):
+        assert is_valid_imei("12345") is False
+        assert is_valid_imei("") is False
+
+    def test_non_digits(self):
+        assert is_valid_imei("49015420323751A") is False
+
+
+# ── Binary IMEI leading zeros preserved ───────────────────────────────────────
+
+class TestBinaryImei:
+    def test_leading_zeros_kept(self):
+        imei_bcd = b"\x01\x23\x45\x67\x89"   # BCD → "0123456789"
+        payload = imei_bcd + b"\x10\x30\x45" + b"\x37\x45\x95\x02" + \
+                  b"\x12\x30\x11\x00" + bytes([0]) + (0).to_bytes(2, "big") + b"\xff\xff\xff\xff"
+        checksum = 0
+        for b in payload:
+            checksum ^= b
+        pkt = parse_packet(b"$" + payload + bytes([checksum]))
+        assert pkt is not None
+        assert pkt.imei == "0123456789"      # was corrupted to "123456789" before
