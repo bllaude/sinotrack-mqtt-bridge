@@ -4,7 +4,21 @@ __pycache__/
 .pytest_cache/
 .env
 config/config.yaml
-mosquitto/
+mosquitto/config/*.log
+!mosquitto/config/mosquitto.conf
 *.log
 dist/
 *.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
