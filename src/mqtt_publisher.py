@@ -19,7 +19,11 @@ import json
 import logging
 import time
 from typing import Optional
-import paho.mqtt.client as mqtt
+
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:  # Allow importing this module (e.g. for tests) without paho installed
+    mqtt = None
 
 from h02_parser import ParsedPacket
 
@@ -44,6 +48,10 @@ class MQTTPublisher:
     # ── Connection ──────────────────────────────────────────────────────────
 
     def connect(self) -> None:
+        if mqtt is None:
+            raise RuntimeError(
+                "paho-mqtt is not installed; run 'pip install -r requirements.txt'"
+            )
         self._client = mqtt.Client(
             client_id=self.client_id,
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
@@ -173,6 +181,9 @@ class MQTTPublisher:
                 "payload_home":    "home",
                 "payload_not_home": "not_home",
                 "source_type":     "gps",
+                "latitude_template":  "{{ value_json.latitude }}",
+                "longitude_template": "{{ value_json.longitude }}",
+                "accuracy_template":  "{{ value_json.gps_accuracy }}",
                 "device":          device,
             },
         )
