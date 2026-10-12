@@ -43,13 +43,22 @@ class H02ParseError(Exception):
     pass
 
 
-# ── Status / alarm bitmask (vehicle_status field, 4 bytes hex) ──────────────
+def is_valid_imei(imei: str) -> bool:
+    """Validate a 15-digit IMEI with the Luhn checksum."""
+    if not isinstance(imei, str) or len(imei) != 15 or not imei.isdigit():
+        return False
+    total = 0
+    for i, ch in enumerate(imei):
+        d = int(ch)
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
 
-_ALARM_BITS = {
-    # Byte 0 (rightmost byte of status word)
-    0x00: None,
-    # Byte 1
-}
+
+# ── Status / alarm bitmask (vehicle_status field, 4 bytes hex) ──────────────
 
 STATUS_FLAGS = {
     "sos":        (3, 0),   # byte index, bit
@@ -187,9 +196,9 @@ def _parse_binary(data: bytes) -> ParsedPacket:
     def bcd_decode(b: bytes) -> str:
         return "".join(f"{byte:02X}" for byte in b)
 
-    # IMEI — first 5 bytes BCD = 10 digits (some firmwares use 8 bytes for 15 digits)
-    imei_raw = bcd_decode(data[1:6])
-    imei = imei_raw.lstrip("0") or "0"
+    # IMEI — first 5 bytes BCD = 10 digits (some firmwares use 8 bytes for 15 digits).
+    # Keep leading zeros: stripping them would corrupt IMEIs that start with 0.
+    imei = bcd_decode(data[1:6]).rstrip()
 
     # Time
     hh = int(bcd_decode(data[6:7]))
@@ -259,7 +268,7 @@ def parse_packet(data: bytes) -> Optional[ParsedPacket]:
     text = data.decode("ascii", errors="replace").strip()
 
     # ── Heartbeat ──────────────────────────────────────────────────────────
-    # Some Sinotrack devices send a raw IMEI as keepalive
+    # Some Sinotrack devices send "*HQ,<imei>,Link#"; others send a raw 15-digit IMEI
     if text.startswith("*HQ") and ",Link#" in text:
         imei = text.split(",")[1] if "," in text else "unknown"
         return ParsedPacket(
@@ -269,11 +278,17 @@ def parse_packet(data: bytes) -> Optional[ParsedPacket]:
             valid_fix=False, packet_type="heartbeat",
         )
 
+    if text.isdigit() and len(text) == 15:
+        return ParsedPacket(
+            imei=text, timestamp=datetime.now(timezone.utc),
+            latitude=None, longitude=None,
+            speed_kmh=None, course_deg=None,
+            valid_fix=False, packet_type="heartbeat",
+        )
+
     # ── Text H02 ───────────────────────────────────────────────────────────
     if text.startswith("*HQ,"):
-        parts = text.lstrip("*HQ,").split(",")
-        # Re-parse: split by comma from the full string
-        parts = text[1:].split(",")  # remove leading *
+        parts = text[1:].split(",")  # remove leading *, parts[0] == "HQ"
         # parts[0] = "HQ", parts[1] = IMEI, parts[2] = cmd
         if len(parts) < 4:
             logger.warning("Malformed text packet: %s", text[:80])
