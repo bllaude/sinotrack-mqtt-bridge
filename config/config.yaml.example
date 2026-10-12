@@ -5,6 +5,7 @@ server:
   host: "0.0.0.0"       # Listen on all interfaces
   port: 8090             # TCP port (tell your tracker: 8040000 <your-ip> 8090)
   ack_enabled: true      # Send *HQ,<imei>,R12,<time># ACK after each packet
+  max_connections: 100   # Reject new TCP connections beyond this limit
 
 mqtt:
   host: "localhost"      # MQTT broker address
